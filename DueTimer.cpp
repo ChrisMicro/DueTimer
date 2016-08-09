@@ -8,71 +8,52 @@
   Released into the public domain.
 */
 
-#include <Arduino.h>
-#if defined(_SAM3XA_)
 #include "DueTimer.h"
 
-const DueTimer::Timer DueTimer::Timers[NUM_TIMERS] = {
-	{TC0,0,TC0_IRQn},
-	{TC0,1,TC1_IRQn},
-	{TC0,2,TC2_IRQn},
-	{TC1,0,TC3_IRQn},
-	{TC1,1,TC4_IRQn},
-	{TC1,2,TC5_IRQn},
-	{TC2,0,TC6_IRQn},
-	{TC2,1,TC7_IRQn},
-	{TC2,2,TC8_IRQn},
+const DueTimer::Timer DueTimer::Timers[9] = {
+	{TC0, 0, TC0_IRQn,   22, PIO_PERIPH_B},
+	{TC0, 1, TC1_IRQn,   59, PIO_PERIPH_A}, // A5
+	{TC0, 2, TC2_IRQn,   31, PIO_PERIPH_A},
+	{TC1, 0, TC3_IRQn,   57, PIO_PERIPH_B}, // A3
+	{TC1, 1, TC4_IRQn,   56, PIO_PERIPH_B}, // A2
+	{TC1, 2, TC5_IRQn,   67, PIO_PERIPH_A},
+	{TC2, 0, TC6_IRQn, NULL, PIO_PERIPH_B}, // n/a
+	{TC2, 1, TC7_IRQn, NULL, PIO_PERIPH_B}, // LED "RX"
+	{TC2, 2, TC8_IRQn,   30, PIO_PERIPH_B},
 };
 
-// Fix for compatibility with Servo library
-#ifdef USING_SERVO_LIB
-	// Set callbacks as used, allowing DueTimer::getAvailable() to work
-	void (*DueTimer::callbacks[NUM_TIMERS])() = {
-		(void (*)()) 1, // Timer 0 - Occupied
-		(void (*)()) 0, // Timer 1
-		(void (*)()) 1, // Timer 2 - Occupied
-		(void (*)()) 1, // Timer 3 - Occupied
-		(void (*)()) 1, // Timer 4 - Occupied
-		(void (*)()) 1, // Timer 5 - Occupied
-		(void (*)()) 0, // Timer 6
-		(void (*)()) 0, // Timer 7
-		(void (*)()) 0  // Timer 8
-	};
-#else
-	void (*DueTimer::callbacks[NUM_TIMERS])() = {};
-#endif
-double DueTimer::_frequency[NUM_TIMERS] = {-1,-1,-1,-1,-1,-1,-1,-1,-1};
+void (*DueTimer::callbacks[9])() = {};
+double DueTimer::_frequency[9] = {-1,-1,-1,-1,-1,-1,-1,-1,-1};
 
 /*
 	Initializing all timers, so you can use them like this: Timer0.start();
 */
 DueTimer Timer(0);
 
+DueTimer Timer0(0);
 DueTimer Timer1(1);
-// Fix for compatibility with Servo library
-#ifndef USING_SERVO_LIB
-	DueTimer Timer0(0);
-	DueTimer Timer2(2);
-	DueTimer Timer3(3);
-	DueTimer Timer4(4);
-	DueTimer Timer5(5);
-#endif
+DueTimer Timer2(2);
+DueTimer Timer3(3);
+DueTimer Timer4(4);
+DueTimer Timer5(5);
 DueTimer Timer6(6);
 DueTimer Timer7(7);
 DueTimer Timer8(8);
 
-DueTimer::DueTimer(unsigned short _timer) : timer(_timer){
+DueTimer::DueTimer(int _timer){
 	/*
 		The constructor of the class DueTimer 
 	*/
+
+	timer = _timer;
 }
 
-DueTimer DueTimer::getAvailable(void){
+DueTimer DueTimer::getAvailable(){
 	/*
 		Return the first timer with no callback set
 	*/
 
-	for(int i = 0; i < NUM_TIMERS; i++){
+	for(int i = 0; i < 9; i++){
 		if(!callbacks[i])
 			return DueTimer(i);
 	}
@@ -80,7 +61,7 @@ DueTimer DueTimer::getAvailable(void){
 	return DueTimer(0);
 }
 
-DueTimer& DueTimer::attachInterrupt(void (*isr)()){
+DueTimer DueTimer::attachInterrupt(void (*isr)()){
 	/*
 		Links the function passed as argument to the timer of the object
 	*/
@@ -90,7 +71,7 @@ DueTimer& DueTimer::attachInterrupt(void (*isr)()){
 	return *this;
 }
 
-DueTimer& DueTimer::detachInterrupt(void){
+DueTimer DueTimer::detachInterrupt(){
 	/*
 		Links the function passed as argument to the timer of the object
 	*/
@@ -102,7 +83,7 @@ DueTimer& DueTimer::detachInterrupt(void){
 	return *this;
 }
 
-DueTimer& DueTimer::start(long microseconds){
+DueTimer DueTimer::start(long microseconds){
 	/*
 		Start the timer
 		If a period is set, then sets the period and start the timer
@@ -116,20 +97,16 @@ DueTimer& DueTimer::start(long microseconds){
 
 	NVIC_ClearPendingIRQ(Timers[timer].irq);
 	NVIC_EnableIRQ(Timers[timer].irq);
-	
-	TC_Start(Timers[timer].tc, Timers[timer].channel);
 
 	return *this;
 }
 
-DueTimer& DueTimer::stop(void){
+DueTimer DueTimer::stop(){
 	/*
 		Stop the timer
 	*/
 
 	NVIC_DisableIRQ(Timers[timer].irq);
-	
-	TC_Stop(Timers[timer].tc, Timers[timer].channel);
 
 	return *this;
 }
@@ -144,7 +121,7 @@ uint8_t DueTimer::bestClock(double frequency, uint32_t& retRC){
 		TIMER_CLOCK3	MCK / 32
 		TIMER_CLOCK4	MCK /128
 	*/
-	const struct {
+	struct {
 		uint8_t flag;
 		uint8_t divisor;
 	} clockConfig[] = {
@@ -157,13 +134,12 @@ uint8_t DueTimer::bestClock(double frequency, uint32_t& retRC){
 	float error;
 	int clkId = 3;
 	int bestClock = 3;
-	float bestError = 9.999e99;
+	float bestError = 1.0;
 	do
 	{
 		ticks = (float) VARIANT_MCK / frequency / (float) clockConfig[clkId].divisor;
-		// error = abs(ticks - round(ticks));
-		error = clockConfig[clkId].divisor * abs(ticks - round(ticks));	// Error comparison needs scaling
-		if (error < bestError)
+		error = abs(ticks - round(ticks));
+		if (abs(error) < bestError)
 		{
 			bestClock = clkId;
 			bestError = error;
@@ -174,8 +150,89 @@ uint8_t DueTimer::bestClock(double frequency, uint32_t& retRC){
 	return clockConfig[bestClock].flag;
 }
 
+bool DueTimer::setUpCounter() {
+	/*
+		Set up a TC channel as hardware counter
+		driven by its external clock input.
+	*/
 
-DueTimer& DueTimer::setFrequency(double frequency){
+	Timer t = Timers[timer];
+
+	if (t.tclk_pin == NULL) return false;
+
+	// Set up the external clock input 
+	PIO_Configure(g_APinDescription[t.tclk_pin].pPort,
+		t.tclk_periph,
+		g_APinDescription[t.tclk_pin].ulPin,
+		PIO_DEFAULT);
+
+	// Tell the Power Management Controller to disable 
+	// the write protection of the (Timer/Counter) registers:
+	pmc_set_writeprotect(false);
+
+	// Enable clock for the timer
+	pmc_enable_periph_clk((uint32_t)t.irq);
+
+	uint32_t xc_tclk, tcclk_xc;
+	// Set up external clock input for the channel
+	switch (t.channel) {
+		case 0:
+			xc_tclk = TC_BMR_TC0XC0S_TCLK0;
+			tcclk_xc = TC_CMR_TCCLKS_XC0;
+			break;
+		case 1:
+			xc_tclk = TC_BMR_TC1XC1S_TCLK1;
+			tcclk_xc = TC_CMR_TCCLKS_XC1;
+			break;
+		case 2:
+			xc_tclk = TC_BMR_TC2XC2S_TCLK2;
+			tcclk_xc = TC_CMR_TCCLKS_XC2;
+			break;
+		default:
+			return false;
+	}
+
+	t.tc->TC_BMR |= xc_tclk;
+	TC_Configure(t.tc, t.channel, tcclk_xc | TC_CMR_BURST_NONE);
+
+	return true;
+}
+
+DueTimer DueTimer::startCounter() {
+	/*
+		Start the counter (resets the counter value to zero)
+	*/
+
+	Timer t = Timers[timer];
+
+	TC_Start(t.tc, t.channel);
+
+	return *this;
+}
+
+DueTimer DueTimer::stopCounter() {
+	/*
+		Stop the counter
+	*/
+
+	Timer t = Timers[timer];
+
+	TC_Stop(t.tc, t.channel);
+
+	return *this;
+}
+
+uint32_t DueTimer::counterValue(){
+	/*
+		Get the current counter value
+	*/
+
+	Timer t = Timers[timer];
+
+	return TC_ReadCV(t.tc, t.channel);
+}
+
+DueTimer DueTimer::setFrequency(double frequency){
 	/*
 		Set the timer frequency (in Hz)
 	*/
@@ -183,8 +240,8 @@ DueTimer& DueTimer::setFrequency(double frequency){
 	// Prevent negative frequencies
 	if(frequency <= 0) { frequency = 1; }
 
-	// Remember the frequency — see below how the exact frequency is reported instead
-	//_frequency[timer] = frequency;
+	// Remember the frequency
+	_frequency[timer] = frequency;
 
 	// Get current timer configuration
 	Timer t = Timers[timer];
@@ -202,27 +259,14 @@ DueTimer& DueTimer::setFrequency(double frequency){
 	// Find the best clock for the wanted frequency
 	clock = bestClock(frequency, rc);
 
-	switch (clock) {
-	  case TC_CMR_TCCLKS_TIMER_CLOCK1:
-	    _frequency[timer] = (double)VARIANT_MCK / 2.0 / (double)rc;
-	    break;
-	  case TC_CMR_TCCLKS_TIMER_CLOCK2:
-	    _frequency[timer] = (double)VARIANT_MCK / 8.0 / (double)rc;
-	    break;
-	  case TC_CMR_TCCLKS_TIMER_CLOCK3:
-	    _frequency[timer] = (double)VARIANT_MCK / 32.0 / (double)rc;
-	    break;
-	  default: // TC_CMR_TCCLKS_TIMER_CLOCK4
-	    _frequency[timer] = (double)VARIANT_MCK / 128.0 / (double)rc;
-	    break;
-	}
-
 	// Set up the Timer in waveform mode which creates a PWM
 	// in UP mode with automatic trigger on RC Compare
 	// and sets it up with the determined internal clock as clock input.
 	TC_Configure(t.tc, t.channel, TC_CMR_WAVE | TC_CMR_WAVSEL_UP_RC | clock);
 	// Reset counter and fire interrupt when RC value is matched:
 	TC_SetRC(t.tc, t.channel, rc);
+	// Start the Counter channel
+	TC_Start(t.tc, t.channel);
 	// Enable the RC Compare Interrupt...
 	t.tc->TC_CHANNEL[t.channel].TC_IER=TC_IER_CPCS;
 	// ... and disable all others.
@@ -231,7 +275,7 @@ DueTimer& DueTimer::setFrequency(double frequency){
 	return *this;
 }
 
-DueTimer& DueTimer::setPeriod(unsigned long microseconds){
+DueTimer DueTimer::setPeriod(long microseconds){
 	/*
 		Set the period of the timer (in microseconds)
 	*/
@@ -242,7 +286,7 @@ DueTimer& DueTimer::setPeriod(unsigned long microseconds){
 	return *this;
 }
 
-double DueTimer::getFrequency(void) const {
+double DueTimer::getFrequency(){
 	/*
 		Get current time frequency
 	*/
@@ -250,7 +294,7 @@ double DueTimer::getFrequency(void) const {
 	return _frequency[timer];
 }
 
-long DueTimer::getPeriod(void) const {
+long DueTimer::getPeriod(){
 	/*
 		Get current time period
 	*/
@@ -263,46 +307,39 @@ long DueTimer::getPeriod(void) const {
 	Implementation of the timer callbacks defined in 
 	arduino-1.5.2/hardware/arduino/sam/system/CMSIS/Device/ATMEL/sam3xa/include/sam3x8e.h
 */
-// Fix for compatibility with Servo library
-#ifndef USING_SERVO_LIB
-void TC0_Handler(void){
+void TC0_Handler(){
 	TC_GetStatus(TC0, 0);
 	DueTimer::callbacks[0]();
 }
-#endif
-void TC1_Handler(void){
+void TC1_Handler(){
 	TC_GetStatus(TC0, 1);
 	DueTimer::callbacks[1]();
 }
-// Fix for compatibility with Servo library
-#ifndef USING_SERVO_LIB
-void TC2_Handler(void){
+void TC2_Handler(){
 	TC_GetStatus(TC0, 2);
 	DueTimer::callbacks[2]();
 }
-void TC3_Handler(void){
+void TC3_Handler(){
 	TC_GetStatus(TC1, 0);
 	DueTimer::callbacks[3]();
 }
-void TC4_Handler(void){
+void TC4_Handler(){
 	TC_GetStatus(TC1, 1);
 	DueTimer::callbacks[4]();
 }
-void TC5_Handler(void){
+void TC5_Handler(){
 	TC_GetStatus(TC1, 2);
 	DueTimer::callbacks[5]();
 }
-#endif
-void TC6_Handler(void){
+void TC6_Handler(){
 	TC_GetStatus(TC2, 0);
 	DueTimer::callbacks[6]();
 }
-void TC7_Handler(void){
+void TC7_Handler(){
 	TC_GetStatus(TC2, 1);
 	DueTimer::callbacks[7]();
 }
-void TC8_Handler(void){
+void TC8_Handler(){
 	TC_GetStatus(TC2, 2);
 	DueTimer::callbacks[8]();
 }
-#endif
